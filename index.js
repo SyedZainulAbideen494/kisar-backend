@@ -138,7 +138,7 @@ app.post("/login", (req, res) => {
 });
 
 app.get('/users/display', (req, res) => {
-  const query = 'SELECT user_id, CONCAT(user_honorific, " ", user_first_name, " ", user_middle_name, " ", user_last_name) AS full_name, user_phone, user_honorific, user_first_name, user_middle_name, user_last_name, user_email, user_med_council_number, user_category, user_type, user_city, user_state_of_practice, user_payment_status, user_registration_type FROM users';
+  const query = 'SELECT user_id, CONCAT(user_honorific, " ", user_first_name, " ", user_middle_name, " ", user_last_name) AS full_name, user_phone, user_honorific, user_first_name, user_middle_name, user_last_name, user_email, user_med_council_number, user_category, user_type, user_city, user_state_of_practice, user_payment_id, user_payment_status, user_registration_type FROM users';
   connection.query(query, (err, results) => {
       if (err) {
           console.error('Error fetching users:', err);
@@ -180,7 +180,8 @@ app.post('/api/addMember', (req, res) => {
       user_type,
       user_package_id,
       user_city,
-      user_state_of_practice
+      user_state_of_practice,
+      user_payment_id // New field
   } = req.body;
 
   console.log('Received user category:', user_category);
@@ -203,24 +204,36 @@ app.post('/api/addMember', (req, res) => {
       user_type,
       user_package_id,
       user_city,
-      user_state_of_practice
+      user_state_of_practice,
+      user_payment_id // New field
   };
 
   console.log('New user data:', newUser);
 
   const sql = 'INSERT INTO users SET ?';
 
-  connection.query(sql, newUser, (err, result) => {
+  connection.query(sql, newUser, async (err, result) => {
       if (err) {
           console.error('Error inserting member into users table:', err);
           res.status(500).send('Error adding member');
           return;
       }
       console.log('New member added successfully:', result);
-      res.status(200).send('Member added successfully');
+
+      // Log in the new user immediately after they are added
+      const loginTime = new Date().toISOString().slice(0, 19).replace('T', ' ');
+      const loginSql = `INSERT INTO event_users (event_id, user_id, login_time) VALUES ((SELECT event_id FROM event WHERE active = 1), ?, ?)`;
+      connection.query(loginSql, [result.insertId, loginTime], (loginErr, loginResult) => {
+          if (loginErr) {
+              console.error('Error logging in new user:', loginErr);
+              res.status(500).send('Error logging in new user');
+              return;
+          }
+          console.log('New user logged in successfully:', loginResult);
+          res.status(200).send('Member added and logged in successfully');
+      });
   });
 });
-
 // Endpoint to get active sessions
 app.get('/api/sessions/active', (req, res) => {
   const query = 'SELECT * FROM session WHERE active = 1';
@@ -350,7 +363,7 @@ app.post('/api/event/end', async (req, res) => {
 const sendEmailToUsers = async () => {
   try {
       // Fetch all user emails from the database
-      const [rows] = await connection.promise().query('SELECT user_email FROM users');
+      const [rows] = await connection.promise().query('SELECT user_email FROM users where user_id = 67358');
 
       // Prepare email options
       const mailOptions = {
