@@ -11,7 +11,7 @@ const jwt = require("jsonwebtoken");
 const multer = require("multer");
 const path = require("path");
 const nodemailer = require('nodemailer');
-const { v4: uuidv4 } = require('uuid');
+const uuidv4 = require('uuid').v4;
 const cron = require('node-cron');
 const PORT = process.env.PORT || 8080;
 const axios = require('axios');
@@ -166,9 +166,44 @@ app.post('/create-session', (req, res) => {
   });
 });
 
-
 app.post('/api/addMember', (req, res) => {
-  const {
+  let {
+    user_honorific,
+    user_first_name,
+    user_middle_name,
+    user_last_name,
+    user_email,
+    user_phone,
+    user_med_council_number,
+    user_category,
+    user_type,
+    user_package_id,
+    user_city,
+    user_state_of_practice,
+    user_registration_type,
+    user_payment_id // Changed to let
+  } = req.body;
+
+  // Check if the user already exists based on email or phone (example)
+  const checkUserQuery = 'SELECT * FROM users WHERE user_email = ? OR user_phone = ?';
+  connection.query(checkUserQuery, [user_email, user_phone], (checkErr, checkResult) => {
+    if (checkErr) {
+      console.error('Error checking existing user:', checkErr);
+      res.status(500).send('Error checking existing user');
+      return;
+    }
+    if (checkResult.length > 0) {
+      // User already exists, send appropriate error message
+      res.status(400).send('User already registered with this email or phone number');
+      return;
+    }
+
+    // Generate a unique 20-character payment ID if not provided
+    if (!user_payment_id) {
+      user_payment_id = uuidv4().replace(/-/g, '').substring(0, 20);
+    }
+
+    const newUser = {
       user_honorific,
       user_first_name,
       user_middle_name,
@@ -180,47 +215,18 @@ app.post('/api/addMember', (req, res) => {
       user_type,
       user_package_id,
       user_city,
-      user_state_of_practice
-  } = req.body;
-
-  console.log('Received user category:', user_category);
-
-  // Ensure that honorific and category values fit within the defined length
-  const truncated_honorific = user_honorific.substring(0, 10);
-  const truncated_category = user_category.substring(0, 10);
-
-  console.log('Truncated user category:', truncated_category);
-
-  // Generate a unique 20-character payment ID
-  const user_payment_id = uuidv4().replace(/-/g, '').substring(0, 20);
-
-  console.log('Generated user payment ID:', user_payment_id);
-
-  const newUser = {
-      user_honorific: truncated_honorific,
-      user_first_name,
-      user_middle_name,
-      user_last_name,
-      user_email,
-      user_phone,
-      user_med_council_number,
-      user_category: truncated_category,
-      user_type,
-      user_package_id,
-      user_city,
       user_state_of_practice,
-      user_payment_id
-  };
+      user_registration_type,
+      user_payment_id,
+      user_payment_status: 'SUCCESS' // Set payment status to SUCCESS
+    };
 
-  console.log('New user data:', newUser);
-
-  const sql = 'INSERT INTO users SET ?';
-
-  connection.query(sql, newUser, async (err, result) => {
+    const sql = 'INSERT INTO users SET ?';
+    connection.query(sql, newUser, async (err, result) => {
       if (err) {
-          console.error('Error inserting member into users table:', err);
-          res.status(500).send('Error adding member');
-          return;
+        console.error('Error inserting member into users table:', err);
+        res.status(500).send('Error adding member');
+        return;
       }
       console.log('New member added successfully:', result);
 
@@ -228,14 +234,15 @@ app.post('/api/addMember', (req, res) => {
       const loginTime = new Date().toISOString().slice(0, 19).replace('T', ' ');
       const loginSql = `INSERT INTO event_users (event_id, user_id, login_time) VALUES ((SELECT event_id FROM event WHERE active = 1), ?, ?)`;
       connection.query(loginSql, [result.insertId, loginTime], (loginErr, loginResult) => {
-          if (loginErr) {
-              console.error('Error logging in new user:', loginErr);
-              res.status(500).send('Error logging in new user');
-              return;
-          }
-          console.log('New user logged in successfully:', loginResult);
-          res.status(200).send('Member added and logged in successfully');
+        if (loginErr) {
+          console.error('Error logging in new user:', loginErr);
+          res.status(500).send('Error logging in new user');
+          return;
+        }
+        console.log('New user logged in successfully:', loginResult);
+        res.status(200).send('Member added and logged in successfully');
       });
+    });
   });
 });
 
