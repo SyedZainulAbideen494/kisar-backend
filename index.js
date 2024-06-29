@@ -11,7 +11,7 @@ const jwt = require("jsonwebtoken");
 const multer = require("multer");
 const path = require("path");
 const nodemailer = require('nodemailer');
-const uuid = require('uuid');
+const { v4: uuidv4 } = require('uuid');
 const cron = require('node-cron');
 const PORT = process.env.PORT || 8080;
 const axios = require('axios');
@@ -180,8 +180,7 @@ app.post('/api/addMember', (req, res) => {
       user_type,
       user_package_id,
       user_city,
-      user_state_of_practice,
-      user_payment_id // New field
+      user_state_of_practice
   } = req.body;
 
   console.log('Received user category:', user_category);
@@ -191,6 +190,11 @@ app.post('/api/addMember', (req, res) => {
   const truncated_category = user_category.substring(0, 10);
 
   console.log('Truncated user category:', truncated_category);
+
+  // Generate a unique 20-character payment ID
+  const user_payment_id = uuidv4().replace(/-/g, '').substring(0, 20);
+
+  console.log('Generated user payment ID:', user_payment_id);
 
   const newUser = {
       user_honorific: truncated_honorific,
@@ -205,7 +209,7 @@ app.post('/api/addMember', (req, res) => {
       user_package_id,
       user_city,
       user_state_of_practice,
-      user_payment_id // New field
+      user_payment_id
   };
 
   console.log('New user data:', newUser);
@@ -232,6 +236,22 @@ app.post('/api/addMember', (req, res) => {
           console.log('New user logged in successfully:', loginResult);
           res.status(200).send('Member added and logged in successfully');
       });
+  });
+});
+
+app.put('/api/updateUser/:userId', (req, res) => {
+  const userId = req.params.userId;
+  const updatedUser = req.body;
+
+  const sql = 'UPDATE users SET ? WHERE user_id = ?';
+
+  connection.query(sql, [updatedUser, userId], (err, result) => {
+      if (err) {
+          console.error('Error updating user:', err);
+          res.status(500).send('Error updating user');
+          return;
+      }
+      res.status(200).send('User updated successfully');
   });
 });
 // Endpoint to get active sessions
@@ -382,6 +402,114 @@ const sendEmailToUsers = async () => {
       console.error('Error sending email to users:', error);
   }
 };
+
+const getActiveSessionAndEvent = () => {
+  return new Promise((resolve, reject) => {
+      const getSessionSql = 'SELECT * FROM session WHERE active = 1';
+      const getEventSql = 'SELECT * FROM event WHERE active = 1';
+
+      connection.query(getSessionSql, (err, sessionResults) => {
+          if (err) return reject(err);
+          if (sessionResults.length === 0) return reject(new Error('No active session found'));
+
+          connection.query(getEventSql, (err, eventResults) => {
+              if (err) return reject(err);
+              if (eventResults.length === 0) return reject(new Error('No active event found'));
+
+              resolve({ activeSession: sessionResults[0], activeEvent: eventResults[0] });
+          });
+      });
+  });
+};
+
+// New endpoint for checking event/session participation
+app.post('/api/checkParticipation', async (req, res) => {
+  const { payment_id } = req.body;
+
+  if (!payment_id) {
+      return res.status(400).send('Missing required fields');
+  }
+
+  try {
+      // Get the active session and event
+      const { activeSession, activeEvent } = await getActiveSessionAndEvent();
+      const session_id = activeSession.session_id;
+      const event_id = activeEvent.event_id;
+
+      // Get the current time on the server
+      const currentTime = new Date().toISOString().slice(0, 19).replace('T', ' ');
+
+      // First, fetch the user ID associated with the payment ID
+      const fetchUserIdSql = 'SELECT user_id FROM users WHERE user_payment_id = ?';
+      connection.query(fetchUserIdSql, [payment_id], (err, userResults) => {
+          if (err) {
+              console.error('Error fetching user ID:', err);
+              return res.status(500).send('Internal server error');
+          }
+
+          if (userResults.length === 0) {
+              return res.status(404).send('User not found');
+          }
+
+          const user_id = userResults[0].user_id;
+
+          // Check if the user is already associated with the event and session
+          const checkParticipationSql = `
+              SELECT * FROM session_users 
+              WHERE user_id = ? AND event_id = ? AND session_id = ?
+          `;
+          connection.query(checkParticipationSql, [user_id, event_id, session_id], (err, participationResults) => {
+              if (err) {
+                  console.error('Error checking participation:', err);
+                  return res.status(500).send('Internal server error');
+              }
+
+              if (participationResults.length > 0) {
+                  return res.status(401).send('User is already associated with this event and session');
+              }
+
+              // If not, insert a new participation record
+              const insertParticipationSql = `
+                  INSERT INTO session_users (user_id, event_id, session_id, time) 
+                  VALUES (?, ?, ?, ?)
+              `;
+              connection.query(insertParticipationSql, [user_id, event_id, session_id, currentTime], (err, insertResult) => {
+                  if (err) {
+                      console.error('Error inserting participation record:', err);
+                      return res.status(500).send('Internal server error');
+                  }
+
+                  res.status(200).send('User successfully associated with event and session');
+              });
+          });
+      });
+  } catch (err) {
+      console.error('Error:', err.message);
+      res.status(500).send('Internal server error');
+  }
+});
+
+app.get('/api/getMembersBySession/:session_id', (req, res) => {
+  const { session_id } = req.params;
+
+  const sql = `
+      SELECT users.user_id, users.user_first_name, users.user_last_name, users.user_email, users.user_phone 
+      FROM users 
+      JOIN session_users ON users.user_id = session_users.user_id 
+      WHERE session_users.session_id = ?
+  `;
+
+  connection.query(sql, [session_id], (err, results) => {
+      if (err) {
+          console.error('Error fetching members for session:', err);
+          res.status(500).send('Internal server error');
+          return;
+      }
+
+      res.status(200).json(results);
+  });
+});
+
 
 // Start the server
 app.listen(PORT, () => {
